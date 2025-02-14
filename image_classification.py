@@ -316,3 +316,32 @@ final_accuracy = total_correct / total_samples * 100
 final_f1 = f1_score(all_labels, all_preds, average='weighted')
 print(f"Final Validation Accuracy: {final_accuracy:.2f}%")
 print(f"Final Validation F1-Score: {final_f1:.4f}")
+
+for folder_name in sorted(os.listdir(dogs_directory_train)):
+    folder_path = os.path.join(dogs_directory_train, folder_name)
+    if os.path.isdir(folder_path):
+        # 각 폴더 내 이미지도 정렬
+        for img_name in sorted(os.listdir(folder_path)):
+            img_path = os.path.join(folder_path, img_name)
+            
+            # 새로운 파일명: "img_0001.jpg", "img_0002.jpg", ...
+            new_img_name = f"img_{counter:04d}.jpg"
+            counter += 1
+            
+            img_path_list.append(img_path)
+            new_img_names.append(new_img_name)
+            # 폴더 이름이 레이블이라고 가정하면:
+            what_dog = os.path.basename(folder_path)
+            labels.append(what_dog)
+
+# DataFrame으로 만들기
+import pandas as pd
+df_inference = pd.DataFrame({
+    'image_id': new_img_names,   # 새 파일명
+    'original_path': img_path_list,
+    'label': labels              # 필요에 따라 사용
+})
+
+# CSV 파일로 저장 (예: 제출 파일)
+df_inference.to_csv('test_predictions.csv', index=False)
+print("test_predictions.csv 파일에 이미지 ID가 저장되었습니다.")
