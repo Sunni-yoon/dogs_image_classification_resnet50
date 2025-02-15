@@ -231,70 +231,119 @@ for epoch in range(10):
     print(f'{epoch} 에폭 모델 저장 완료')
 '''
 
-patience = 5  
-best_val_loss = float('inf')
-patience_counter = 0
+learning_rates = [0.001, 0.0001]
+batch_sizes = [256, 128]
 
-# --- Training loop with early stopping
-for epoch in range(50):
-    model.train()
-    total_train_loss = 0
-    for images, labels in train_loader:
-        images = images.to(device)
-        labels = labels.to(device)
-        
-        optimizer.zero_grad()
-        outputs = model(images)  # 모델 출력 (logits)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
-        
-        total_train_loss += loss.item()
+num_epochs = 50
+patience = 5
+
+best_overall_val_loss = float('inf')
+best_hyperparams = None
+best_model_state = None
+
+# Grid search 결과를 저장할 리스트
+grid_search_results = []
+
+for lr, bs in itertools.product(learning_rates, batch_sizes):
+    print(f"\n--- Training with learning rate: {lr}, batch size: {bs} ---")
     
-    # --- Validation phase ---
-    model.eval()
-    total_val_loss = 0
-    correct = 0
-    total_samples = 0
-    all_val_preds = []
-    all_val_labels = []
-    with torch.no_grad():
-        for images, labels in valid_loader:
+    # DataLoader 재설정 (batch_size에 따라)
+    train_loader = DataLoader(train_dataset, batch_size=bs, shuffle=True)
+    valid_loader = DataLoader(valid_dataset, batch_size=bs, shuffle=False)
+    
+    # 모델 초기화 (모델 재생성)
+    model = ResNetClassifier().to(device)
+    # DataParallel 사용 시
+    model = nn.DataParallel(model, device_ids=gpu_ids)
+    
+    criterion = nn.CrossEntropyLoss().to(device)
+    optimizer = optim.Adam(model.parameters(), lr=lr)
+    
+    best_val_loss = float('inf')
+    patience_counter = 0
+    best_model_state_for_this_run = None
+    
+    for epoch in range(num_epochs):
+        # --- Training Phase ---
+        model.train()
+        total_train_loss = 0
+        for images, labels in train_loader:
             images = images.to(device)
             labels = labels.to(device)
             
+            optimizer.zero_grad()
             outputs = model(images)
             loss = criterion(outputs, labels)
-            total_val_loss += loss.item()
+            loss.backward()
+            optimizer.step()
             
-            # 예측값: 로짓에서 argmax (Softmax를 거치지 않아도 argmax는 동일)
-            preds = torch.argmax(outputs, dim=1)
-            correct += (preds == labels).sum().item()
-            total_samples += labels.size(0)
-            
-            all_val_preds.extend(preds.cpu().numpy())
-            all_val_labels.extend(labels.cpu().numpy())
+            total_train_loss += loss.item()
+        
+        # --- Validation Phase ---
+        model.eval()
+        total_val_loss = 0
+        correct = 0
+        total_samples = 0
+        all_val_preds = []
+        all_val_labels = []
+        with torch.no_grad():
+            for images, labels in valid_loader:
+                images = images.to(device)
+                labels = labels.to(device)
+                
+                outputs = model(images)
+                loss = criterion(outputs, labels)
+                total_val_loss += loss.item()
+                
+                preds = torch.argmax(outputs, dim=1)
+                correct += (preds == labels).sum().item()
+                total_samples += labels.size(0)
+                all_val_preds.extend(preds.cpu().numpy())
+                all_val_labels.extend(labels.cpu().numpy())
+        
+        val_loss_avg = total_val_loss / len(valid_loader)
+        val_accuracy = correct / total_samples * 100
+        f1 = f1_score(all_val_labels, all_val_preds, average='weighted')
+        
+        print(f"Epoch {epoch}: Train Loss = {total_train_loss:.4f}, Val Loss = {val_loss_avg:.4f}, Val Acc = {val_accuracy:.2f}%, F1 = {f1:.4f}")
+        
+        # --- Early Stopping 체크 ---
+        if val_loss_avg < best_val_loss:
+            best_val_loss = val_loss_avg
+            patience_counter = 0
+            # 모델 state를 복사해둡니다.
+            best_model_state_for_this_run = model.state_dict()
+            print("Best model saved for current hyperparameters.")
+        else:
+            patience_counter += 1
+            print(f"{patience_counter}번 참았다.")
+            if patience_counter >= patience:
+                print("Early stopping triggered for current hyperparameters!")
+                break
+                
+    grid_search_results.append({
+        'learning_rate': lr,
+        'batch_size': bs,
+        'val_loss': best_val_loss
+    })
     
-    val_accuracy = correct / total_samples * 100
-    val_loss_avg = total_val_loss / len(valid_loader)
-    f1 = f1_score(all_val_labels, all_val_preds, average='weighted')
-    
-    print(f"Epoch {epoch}: Train Loss = {total_train_loss:.4f}, Val Loss = {val_loss_avg:.4f}, Val Acc = {val_accuracy:.2f}%, F1 = {f1:.4f}")
-    
-    # --- Early Stopping 체크 ---
-    if val_loss_avg < best_val_loss:
-        best_val_loss = val_loss_avg
-        patience_counter = 0
-        torch.save(model.state_dict(), './dogs/best_resnet_model.pth')
-        print("Best model saved.")
-    else:
-        patience_counter += 1
-        print(f'{patience_counter}번 참았다.')
-        if patience_counter >= patience:
-            print("Early stopping triggered!")
-            break
+    # 전체 최적 결과와 비교
+    if best_val_loss < best_overall_val_loss:
+        best_overall_val_loss = best_val_loss
+        best_hyperparams = (lr, bs)
+        best_model_state = best_model_state_for_this_run
 
-# --- 모델 불러와서 최종 평가 ---
+print("\n--- Grid Search Results ---")
+for result in grid_search_results:
+    print(result)
+
+print(f"\nBest Hyperparameters: Learning Rate = {best_hyperparams[0]}, Batch Size = {best_hyperparams[1]}, with Validation Loss = {best_overall_val_loss:.4f}")
+
+# 최적 모델 저장
+torch.save(best_model_state, './dogs/best_resnet_model.pth')
+print("Best model state saved to './dogs/best_resnet_model.pth'")
+
+# --- 최종 평가 (Validation) ---
 model.load_state_dict(torch.load('./dogs/best_resnet_model.pth'))
 model.eval()
 total_correct = 0
@@ -314,34 +363,34 @@ with torch.no_grad():
 
 final_accuracy = total_correct / total_samples * 100
 final_f1 = f1_score(all_labels, all_preds, average='weighted')
-print(f"Final Validation Accuracy: {final_accuracy:.2f}%")
+print(f"\nFinal Validation Accuracy: {final_accuracy:.2f}%")
 print(f"Final Validation F1-Score: {final_f1:.4f}")
 
+# --- 테스트 데이터에 대한 이미지 ID 변경 및 CSV 저장 (예시) ---
+img_path_list = []
+new_img_names = []
+labels_list = []  # 필요에 따라 사용할 레이블
+counter = 1
 for folder_name in sorted(os.listdir(dogs_directory_train)):
     folder_path = os.path.join(dogs_directory_train, folder_name)
     if os.path.isdir(folder_path):
-        # 각 폴더 내 이미지도 정렬
         for img_name in sorted(os.listdir(folder_path)):
             img_path = os.path.join(folder_path, img_name)
             
-            # 새로운 파일명: "img_0001.jpg", "img_0002.jpg", ...
             new_img_name = f"img_{counter:04d}.jpg"
             counter += 1
             
             img_path_list.append(img_path)
             new_img_names.append(new_img_name)
-            # 폴더 이름이 레이블이라고 가정하면:
+            # 폴더 이름이 레이블이라 가정
             what_dog = os.path.basename(folder_path)
-            labels.append(what_dog)
+            labels_list.append(what_dog)
 
-# DataFrame으로 만들기
 import pandas as pd
 df_inference = pd.DataFrame({
     'image_id': new_img_names,   # 새 파일명
     'original_path': img_path_list,
-    'label': labels              # 필요에 따라 사용
+    'label': labels_list         # 필요에 따라 사용
 })
-
-# CSV 파일로 저장 (예: 제출 파일)
 df_inference.to_csv('test_predictions.csv', index=False)
 print("test_predictions.csv 파일에 이미지 ID가 저장되었습니다.")
