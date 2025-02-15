@@ -235,7 +235,7 @@ patience = 5
 best_val_loss = float('inf')
 patience_counter = 0
 
-# --- Training loop with early stopping --- 여기 참고하기
+# --- Training loop with early stopping
 for epoch in range(50):
     model.train()
     total_train_loss = 0
